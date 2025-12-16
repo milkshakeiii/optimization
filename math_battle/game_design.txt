@@ -1,0 +1,298 @@
+# Math Battle: Game Design Document
+
+## 1. Overview
+A 1v1 turn-based fantasy duel game where heroes are defined by data: a collection of numerical attributes and a set of effects defined by a Domain Specific Language (DSL). The game logic is generalized, with specific mechanics (health, mana, winning/losing) implemented as effects rather than hard-coded rules.
+
+## 2. Game State
+The global state consists of two entities: **Player** and **Opponent**.
+Each entity consists of:
+- **Attributes**: A map of `String -> Float` (e.g., "health": 100.0, "mana": 50.0, "strength": 10.0, "burning": 0.0).
+- **Abilities**: A list of actionable moves available to the entity.
+- **Tags**: Labels applied to attributes or abilities for grouping (e.g., "fire", "spell", "movement").
+- **Effects**: A list of passive logic rules defined as `(Trigger, Script)`.
+
+## 3. Turn Structure
+The game proceeds in alternating turns.
+1.  **Turn Start Phase**: Trigger `ON_TURN_START` effects for the active player.
+2.  **Action Phase**:
+    -   Trigger `ON_ACTION_PHASE_START` effects for the active player.
+    -   (Note: If `PASS()` is triggered here, the phase ends immediately, skipping the ability choice).
+    -   The active player chooses one **Ability** from their available list.
+    -   The system identifies the script associated with that ability.
+    -   Trigger `ON_ABILITY_USED`.
+    -   Execute the ability's script.
+    -   The Action Phase ends.
+3.  **Turn End Phase**: Trigger `ON_TURN_END` effects for the active player.
+4.  **Swap Active Player**.
+
+## 4. Triggers & Context
+Triggers define *when* a script executes. Scripts triggered by events can access event-specific data using the `CONTEXT` command.
+
+- `ON_TURN_START`
+  - Context: None.
+- `ON_ACTION_PHASE_START`
+  - Fires at the beginning of the action phase, before the player chooses an ability.
+  - Context: None.
+- `ON_TURN_END`
+  - Context: None.
+- `ON_ABILITY_USED(tag_or_id)`
+  - Fires when an ability is selected, *before* its script runs.
+  - Context: 
+    - `ability_id`: ID of the ability being used.
+    - `cost`: (If applicable) estimated cost.
+- `ON_ATTRIBUTE_CHANGE(attribute_name)`
+  - Fires when the specified attribute changes value.
+  - Context: 
+    - `delta`: The amount the value changed by.
+    - `new_value`: The final value after change.
+    - `old_value`: The value before change.
+- `ON_GAME_START`
+  - Fires once at initialization.
+  - Context: None.
+
+## 5. Domain Specific Language (DSL)
+The DSL is used to write scripts for Abilities and Effects. It represents a syntax tree where nodes are operations and leaves are values.
+
+### Targets
+- `SELF`: Reference to the entity executing the script or owning the effect.
+- `OPPONENT`: Reference to the other entity.
+
+### Context Access
+- `CONTEXT(name)`:
+  - **Description**: Retrieves a value from the current trigger's context (e.g., `CONTEXT("delta")`).
+  - **Returns**: Float. (Returns 0.0 if key not found).
+
+### State Manipulation Commands
+- `GET(target, attribute_name)`: 
+  - **Description**: Retrieves the current float value of the specified attribute on the target. 
+  - **Returns**: Float.
+- `SET(target, attribute_name, value)`: 
+  - **Description**: Sets the specified attribute on the target to exactly `value`.
+  - **Returns**: None/Void.
+- `MODIFY(target, attribute_name, delta)`: 
+  - **Description**: Adds `delta` to the current value of the specified attribute on the target. Equivalent to `SET(target, attr, GET(target, attr) + delta)`.
+  - **Returns**: None/Void.
+
+### Arithmetic Operations
+- `ADD(a, b)`: Returns `a + b`.
+- `SUB(a, b)`: Returns `a - b`.
+- `MUL(a, b)`: Returns `a * b`.
+- `DIV(a, b)`: Returns `a / b` (handle div by zero gracefully, e.g., return 0 or max).
+- `ABS(a)`: Returns absolute value of `a`.
+- `MIN(a, b)`: Returns the smaller of `a` or `b`.
+- `MAX(a, b)`: Returns the larger of `a` or `b`.
+- `ROLL(sides)`: Returns a random integer between 1 and `sides` (inclusive), as a Float.
+
+### Logic & Control Flow
+- `IF(condition, true_branch, false_branch)`: 
+  - **Description**: Evaluates `condition`. If > 0 (true), executes `true_branch`. Otherwise, executes `false_branch`.
+- `SEQ(command_1, command_2, ...)`: 
+  - **Description**: Sequence. Executes a list of commands in order. Useful for abilities that do multiple things.
+- `EQ(a, b)`: Returns 1.0 if `a == b`, else 0.0.
+- `GT(a, b)`: Returns 1.0 if `a > b`, else 0.0.
+- `LT(a, b)`: Returns 1.0 if `a < b`, else 0.0.
+- `AND(a, b)`: Returns 1.0 if both `a` and `b` are non-zero.
+- `OR(a, b)`: Returns 1.0 if either `a` or `b` are non-zero.
+- `NOT(a)`: Returns 1.0 if `a` is 0.0, else 0.0.
+
+### Special Commands
+- `WIN(target)`: Explicitly sets the game state such that `target` wins. Terminates script execution immediately.
+- `LOSE(target)`: Explicitly sets the game state such that `target` loses. Terminates script execution immediately.
+- `NOOP()`: A no-operation command.
+- `PASS()`: Ends the Action Phase immediately. Terminates script execution immediately.
+
+
+## 6. Example Definitions
+
+### Global Effects
+These are standard rules applied to all entities in the game.
+
+> **Note**: Global effects should be treated as input data for the RL training system (part of the observation/configuration), rather than hardcoded environment logic. The system should be trained on many possible arrangements of global effects so that it learns to "read" and adapt to the rules of the specific match (e.g., a match where gravity is high, or where mana burns). The only exception might be the standard Health/Death rule, which we might want to let the agent assume always exists for stability.
+
+#### Rule: Death (Health Depletion)
+**Trigger**: `ON_ATTRIBUTE_CHANGE("health")`
+**Script**:
+```
+IF(LT(GET(SELF, "health"), 1),
+   LOSE(SELF),
+   NOOP()
+)
+```
+
+#### Rule: Burning (Damage over Time)
+**Trigger**: `ON_TURN_START`
+**Script**:
+```
+IF(GT(GET(SELF, "burning"), 0),
+   SEQ(
+       MODIFY(SELF, "health", MUL(GET(SELF, "burning"), -1)),
+       MODIFY(SELF, "burning", -1)
+   ),
+   NOOP()
+)
+```
+
+### Mechanic Examples
+
+#### Mechanic: Rage (Damage increases when hurt)
+**Trigger**: `ON_ATTRIBUTE_CHANGE("health")`
+**Script**:
+```
+IF(LT(CONTEXT("delta"), 0), 
+   MODIFY(SELF, "strength", 1), 
+   NOOP()
+)
+```
+
+#### Mechanic: Stun
+**Trigger**: `ON_ACTION_PHASE_START` (Global/Passive on Hero)
+**Script**:
+```
+IF(GT(GET(SELF, "stunned"), 0),
+   SEQ(
+       MODIFY(SELF, "stunned", -1),
+       PASS()
+   ),
+   NOOP()
+)
+```
+
+### Ability: Fireball
+**Cost**: 10 Mana
+**Effect**: Deal 15 damage to opponent.
+**Script**:
+```
+IF(GT(GET(SELF, "mana"), 9),
+   SEQ(
+       MODIFY(SELF, "mana", -10),
+       MODIFY(OPPONENT, "health", -15)
+   ),
+   NOOP() // Or fail cast
+)
+```
+
+## 7. Data Structure & Schema (JSON)
+Each Hero is serialized as a JSON object containing `attributes` and `abilities` (which include DSL scripts) and `passive_effects`.
+
+### Schema Definition
+```json
+{
+  "name": "HeroName",
+  "attributes": {
+    "key": float_value
+  },
+  "abilities": [
+    {
+      "name": "AbilityName",
+      "tags": ["tag1", "tag2"],
+      "script": "DSL_STRING" 
+    }
+  ],
+  "passive_effects": [
+    {
+      "trigger": "TRIGGER_NAME",
+      "script": "DSL_STRING"
+    }
+  ]
+}
+```
+
+## 8. Hero Examples
+
+### Hero 1: The Fighter
+A straightforward damage dealer with no mana, relying on cooldowns or just raw damage.
+
+```json
+{
+  "name": "Fighter",
+  "attributes": {
+    "health": 100.0,
+    "strength": 10.0,
+    "defense": 5.0
+  },
+  "passive_effects": [
+  ],
+  "abilities": [
+    {
+      "name": "Sword Slash",
+      "tags": ["melee", "physical"],
+      "script": "MODIFY(OPPONENT, 'health', MUL(GET(SELF, 'strength'), -1.0))"
+    },
+    {
+      "name": "Shield Bash",
+      "tags": ["melee", "stun"],
+      "script": "SEQ(MODIFY(OPPONENT, 'health', -5), MODIFY(SELF, 'defense', 2))"
+    },
+    {
+      "name": "Heal Potion",
+      "tags": ["item", "heal"],
+      "script": "MODIFY(SELF, 'health', 20)"
+    }
+  ]
+}
+```
+
+### Hero 2: The Fire Mage
+Relies on Mana to cast spells. If Mana is low, they are vulnerable.
+
+```json
+{
+  "name": "Fire Mage",
+  "attributes": {
+    "health": 60.0,
+    "mana": 100.0,
+    "magic_power": 15.0
+  },
+  "passive_effects": [
+    {
+       "trigger": "ON_TURN_START",
+       "script": "MODIFY(SELF, 'mana', 5)"
+    }
+  ],
+  "abilities": [
+    {
+      "name": "Fireball",
+      "tags": ["spell", "fire"],
+      "script": "IF(GT(GET(SELF, 'mana'), 14), SEQ(MODIFY(SELF, 'mana', -15), MODIFY(OPPONENT, 'health', MUL(GET(SELF, 'magic_power'), -1.5))), NOOP())"
+    },
+    {
+      "name": "Meditate",
+      "tags": ["spell", "utility"],
+      "script": "MODIFY(SELF, 'mana', 20)"
+    },
+    {
+      "name": "Weak Staff Hit",
+      "tags": ["melee", "physical"],
+      "script": "MODIFY(OPPONENT, 'health', -2)"
+    }
+  ]
+}
+```
+
+## 9. Reinforcement Learning (Gymnasium) Interface
+
+### Observation Space
+The environment must provide a fixed-size tensor representation of the game state for JAX compatibility.
+- **Attributes**: A fixed array of floats. We map attribute names to indices (hashing or predefined list).
+  - Shape: `(2, MAX_ATTRIBUTES)` where 2 is for (Self, Opponent).
+  - Missing attributes are padded with 0.0.
+- **Turn Info**: A scalar or one-hot encoding indicating whose turn it is.
+- **Step Count**: Normalized step counter (to handle time limits).
+
+### Action Space
+- **Discrete(MAX_ABILITIES)**: The agent chooses an index `i`.
+- **Action Masking**: Crucial for valid play.
+  - The `info` dictionary returned by `env.step()` will contain an `action_mask` (boolean array).
+  - `True` if `abilities[i]` exists (is not empty). Agents must learn valid moves (e.g. paying costs); invalid moves may result in NOOPs.
+  - `False` if `abilities[i]` is empty/undefined (e.g. padding).
+
+### Reward Function
+- **Sparse**: +1 for Win, -1 for Loss.
+- **Dense (Optional for shaping)**: 
+  - `(MyHealth - OpponentHealth) * Scale`
+  - Warning: Can lead to stalling or suicide strategies if not carefully tuned.
+
+### JAX Implementation Constraints
+- **State Immutability**: The `step` function must be pure: `step(state, rng, action) -> (next_state, reward, done, info)`.
+- **Fixed Shapes**: `MAX_ATTRIBUTES`, `MAX_ABILITIES`, and `MAX_EFFECTS` must be compile-time constants.
+- **Branchless Logic**: The DSL interpreter must essentially compile down to `jax.lax.cond` or `jax.lax.select` calls, or use a "stack machine" approach with fixed step limits (scan loop).

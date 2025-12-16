@@ -1,0 +1,36 @@
+Gymnasium FunctionalJaxEnv Gap Analysis
+=======================================
+
+Clarification of Terms:
+- `FuncEnv` (gymnasium.functional.FuncEnv): The **Pure Logic** definition. It defines `initial`, `transition`, `reward`, `observation`, `terminal`. It is stateless.
+- `FunctionalJaxEnv` (gymnasium.envs.functional_jax_env): The **Wrapper**. It takes a `FuncEnv` and holds the state internally, exposing the standard Gym API (`reset()`, `step(action)`).
+
+Current Status of `src/env.py` (FIXED):
+- `MathBattleFuncEnv` now inherits from `FuncEnv` (or local fallback).
+- It implements the granular functional interface (`initial`, `transition`, `reward`, `observation`, `terminal`).
+- `EnvParams` is used for configuration.
+- `src/tui.py` uses a local `TUIEnvWrapper` to maintain TUI compatibility.
+
+CRITICAL GAP: DSL JAX Compatibility
+-----------------------------------
+While the *interface* (`src/env.py`) is now correct, the *implementation* (`src/dsl.py`) prevents "end-to-end JAX" (JIT compilation):
+
+1. **Python Control Flow**: 
+   - `src/dsl.py` uses a `while` loop: `while ip < MAX_SCRIPT_LEN and not terminated:`.
+   - JAX `jit` cannot trace data-dependent Python loops. This must be replaced with `jax.lax.while_loop` or `jax.lax.scan` (likely `scan` over a fixed max step count to ensure static graph size).
+
+2. **Numpy RNG**:
+   - `src/dsl.py` uses `np.random.seed` and `np.random.randint`.
+   - JAX requires stateless random number generation (`jax.random`). The RNG key is passed in, but the DSL implementation currently ignores the functional JAX RNG pattern in favor of Numpy's stateful RNG for the `OP_ROLL` opcode.
+
+3. **Dynamic Array updates**:
+   - `stack` is updated in-place (`stack[sp] = ...`). JAX requires functional updates (`stack.at[sp].set(...)`).
+
+Conclusion:
+- **Gymnasium vs Gymnax**: Gymnasium is capable of end-to-end JAX and is the correct modern choice. However, the *logic inside* must be JAX-compliant.
+- **Immediate Action**: The DSL interpreter needs a rewrite to be JAX-compliant.
+
+Recommendation:
+1. Rewrite `execute_script` in `src/dsl.py` to use `jax.lax.scan` (fixed step VM execution).
+2. Replace `np.random` with `jax.random` calls using the passed `rng` key.
+3. Ensure all array mutations use `jax.numpy` methods.

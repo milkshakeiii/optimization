@@ -1,0 +1,21 @@
+I want to create an unambiguous and precise description of a fantasy duels battle game. Although the theme of the game is a battle between two fantasy heroes, such as a Wizard vs. a Fighter or a Rogue vs. a Ranger, the game mechanics are nontraditional, and from our perspective as developers, the rules have a heavily numerical flavor. Each hero is just a bunch of labeled numbers (called attributes), like a dictionary of strings to floats, together with a set of active abilities.
+
+There should be a system of "effects" through which we can use _data_ to describe the behavior of arbitrarily many distinct attributes. This is intended to keep the game rules code itself simple while allowing us to input our game design as data. Even fundamental gameplay elements that would be rules, not data, in other games, such as when a player wins or loses, would be input as effects of attributes. For example, the health attribute has an effect "when this reaches 0, lose the game."
+
+Active abilities also work through "effects" described by data. For example, a fighter's simple sword attack could be described with a simple numerical effect, "reduce the opponent's [health attribute] by [my strength attribute]." We want to be able to give these effects simple if-then-else logic, but fundamentally we're just manipulating the heroes as bags of numbers.
+
+Effects should be defined by a trigger defining when the effect happens, and a "script" describing how to modify the game state. The script will need use essentially a very simple domain specific language with if/then/else logic and arithmetic on attributes. If possible, we also want the trigger to be able to pass a value into the script. For example if the trigger is "on health reduced" the script should be able to refer to the amount it was reduced by.
+
+Heroes can uave effects not tied to specific attributes and they have a set of active abilities. So the hero-specific effects will be the default way to make an active ability do something. "when ability 2 is used, reduce self mana by five and increase opponent burning by 1."
+
+(Decision: Randomness is included. We allow dice rolls, which will be the sole source of randomness, likely implemented via a single command in our DSL.
+Rationale:
+1.  **Robustness & Generalization:** Deterministic environments often lead RL agents to overfit to specific, brittle sequences of moves. Randomness forces the agent to learn risk management and general heuristics, resulting in a stronger, more adaptable policy.
+2.  **JAX Compatibility:** JAX's `jax.random.PRNGKey` system allows for fully reproducible randomness, eliminating the debugging nightmares usually associated with stochastic environments.)
+
+My goal here is to be able to turn these mathematically precise game rules into a FunctionalJaxEnv in the Gymnasium library in python and then train a reinforcement learning agent to play this game well regardless of what hero it is using.
+
+Notes:
+We will want to refer to groups of attributes and active abilities in addition to individual ones, so there should be a system of tags where abilities and attributes can have multiple tags associated with them such as "movement," "spell," "stealth," etc.
+
+The game will consist of alternating turns. We will allow effects to force certain actions, including a pass action, but that's the extent of interaction with the otherwise fixed turn order that we'll allow.

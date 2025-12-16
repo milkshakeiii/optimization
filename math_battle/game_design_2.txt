@@ -1,0 +1,324 @@
+# Math Battle: Game Design (Effect Ops Version)
+#
+# This document replaces the string-based DSL with "Effect Ops": a small, fixed
+# instruction set where every rule/ability is data (op + parameters) and the
+# interpreter is JAX/JIT-friendly.
+#
+# Scope: game rules + data schema. (No Gymnasium environment details.)
+
+
+## 1. Overview
+Math Battle is a 1v1, alternating-turn duel. Each hero is:
+- A fixed-size vector of numeric **attributes** (float32).
+- A fixed-size list of **abilities** (actions), each defined by a small program of Effect Ops.
+- A fixed-size list of passive **effects**, each defined by a trigger and an Effect Ops program.
+
+Core design goal: the engine is generic; almost all gameplay rules are input
+as data. Even “fundamental” rules (death, damage-over-time, stun) are effects.
+
+
+## 2. State Model (JAX-friendly)
+### 2.1 Entities
+There are exactly two entities in a match:
+- Entity 0: Player
+- Entity 1: Opponent
+
+Each entity has fixed-size arrays:
+- `attributes[MAX_ATTRIBUTES]` (float32)
+- `abilities[MAX_ABILITIES]` (AbilitySpec)
+- `effects[MAX_EFFECTS]` (EffectSpec)
+
+### 2.2 Attributes
+Attributes are addressed by integer IDs (no strings at runtime).
+Examples:
+- `ATTR_HEALTH`, `ATTR_MAX_HEALTH`
+- `ATTR_MANA`, `ATTR_MAX_MANA`
+- `ATTR_STRENGTH`, `ATTR_DEFENSE`
+- `ATTR_BURN`, `ATTR_STUN`
+
+### 2.3 Tags
+Tags are small integer IDs attached to abilities (and optionally attributes).
+They exist for grouping and generalization (e.g., “fire”, “spell”, “attack”).
+
+
+## 3. Turn Structure (Phases)
+The match proceeds in alternating turns:
+1) **Turn Start Phase**
+   - Trigger `ON_TURN_START` effects for the active entity.
+2) **Action Phase Start**
+   - Trigger `ON_ACTION_PHASE_START` effects for the active entity.
+   - Effects may set `passed=True` (skip action choice).
+3) **Action Selection**
+   - If not passed and not done: the active entity selects one ability.
+4) **Ability Used**
+   - Trigger `ON_ABILITY_USED` effects (typically for both entities).
+   - Execute the selected ability’s Effect Ops program.
+5) **Turn End Phase**
+   - Trigger `ON_TURN_END` effects for the active entity.
+6) **Swap Active Player**
+
+
+## 4. Triggers and Event Context
+Effects run when their trigger matches the current event.
+
+### 4.1 Trigger Types
+- `ON_GAME_START`
+- `ON_TURN_START`
+- `ON_ACTION_PHASE_START`
+- `ON_ABILITY_USED`
+- `ON_TURN_END`
+- `ON_ATTRIBUTE_CHANGE(attr_id)` (parameterized by attribute ID)
+
+### 4.2 Context (Event Payload)
+Some triggers carry data into the effect program.
+Context is a small fixed-size float32 vector `context[CTX_SIZE]`.
+Canonical keys (examples):
+- `CTX_ABILITY_ID` (int-like float): which ability was chosen
+- `CTX_ATTR_ID` (int-like float): which attribute changed (optional convenience)
+- `CTX_ATTR_OLD` / `CTX_ATTR_NEW` / `CTX_ATTR_DELTA`
+
+Rules can read context via Value Expressions (see §5.2).
+
+
+## 5. Effect Ops
+Effect Ops are the replacement for the DSL.
+
+### 5.1 High-level idea
+An Effect Ops “program” is a short, fixed-length list of operations:
+- Abilities: `program_ability[MAX_OPS]`
+- Passive effects: `program_effect[MAX_OPS]`
+
+Each op has a fixed opcode and fixed parameter slots.
+There is no parsing and no string execution.
+
+Interpreter constraints for JAX/JIT:
+- No data-dependent Python control flow.
+- Program length is static (`MAX_OPS`); execution uses `lax.fori_loop` / `scan`.
+- Conditionals use `lax.cond` (structured) or boolean gating.
+- Randomness uses JAX PRNG keys (no global RNG).
+
+### 5.2 Value Expressions (how ops compute numbers)
+Many ops need a numeric value (damage amount, heal amount, condition inputs).
+We represent values as a small “ValueSpec” (data), not arbitrary code.
+
+Minimal ValueSpec set (sufficient for current game):
+- `CONST(c)`                      -> constant float
+- `ATTR(target, attr_id)`         -> read an attribute
+- `CTX(ctx_key)`                  -> read from context
+- `ROLL(sides)`                   -> random integer in [1, sides] as float
+
+Optional (useful, still JIT-able with fixed structure):
+- `ADD(a, b)`, `SUB(a, b)`, `MUL(a, b)`
+- `MIN(a, b)`, `MAX(a, b)`, `ABS(a)`
+
+Implementation note:
+You can store ValueSpecs as:
+1) A tiny fixed-depth expression tree (node arrays), or
+2) A small fixed-length “expression program” in reverse-polish form, or
+3) A restricted affine form (e.g., `base + k*attr + roll`), plus a few extra ops.
+
+This document assumes a generic “ValueSpec” exists, evaluated by the engine.
+
+
+## 6. Effect Op Catalog (the instruction set)
+Below is a suggested minimal set of ops to express the current rules.
+
+### 6.1 Control / termination
+- `END()`
+  - Stop executing the current program.
+- `PASS()`
+  - Set `state.passed = True` and end the current program.
+- `WIN(target)`
+  - Set `state.done=True`, `state.winner=target`, end program.
+- `LOSE(target)`
+  - Set `state.done=True`, `state.winner=1-target`, end program.
+
+### 6.2 State mutation
+- `SET_ATTR(target, attr_id, value: ValueSpec)`
+  - Set attribute exactly.
+  - Emits an `ON_ATTRIBUTE_CHANGE(attr_id)` event if the value changes.
+- `ADD_ATTR(target, attr_id, delta: ValueSpec)`
+  - Add delta to attribute (equivalent to MODIFY).
+  - Emits an `ON_ATTRIBUTE_CHANGE(attr_id)` event if delta != 0.
+- `CLAMP_ATTR(target, attr_id, lo: ValueSpec, hi: ValueSpec)`
+  - Optional helper to keep values in bounds (e.g., health <= max_health).
+
+Convenience macros (purely for authoring; compile into the above):
+- `DAMAGE(target, amount)` := `ADD_ATTR(target, ATTR_HEALTH, MUL(CONST(-1), amount))`
+- `HEAL(target, amount)`   := `ADD_ATTR(target, ATTR_HEALTH, amount)`
+
+### 6.3 Structured conditionals
+To avoid hand-authored jump offsets, conditionals should be *structured*.
+
+- `IF_GT(lhs: ValueSpec, rhs: ValueSpec, then_ops: [Op], else_ops: [Op])`
+- `IF_LT(lhs, rhs, then_ops, else_ops)`
+- `IF_EQ(lhs, rhs, then_ops, else_ops)`
+
+Implementation note:
+At runtime, the engine can interpret structured IF blocks by:
+- Executing `then_ops` or `else_ops` under `lax.cond`, each as a fixed-size block
+  (pad with NOOP/END), or
+- Compiling structured IF into a linear program with computed offsets (assembler),
+  so authors never write offsets by hand.
+
+
+## 7. Event Emission and Attribute-Change Semantics
+When an op changes an attribute, the engine should:
+1) Capture `old_value`, compute `new_value`, compute `delta = new-old`.
+2) Update `context` fields (at least `CTX_ATTR_OLD/NEW/DELTA`, and optionally `CTX_ATTR_ID`).
+3) Enqueue an `ON_ATTRIBUTE_CHANGE(attr_id)` event (bounded queue/stack).
+4) Process the event queue to run matching passive effects.
+
+Important: This must be bounded and deterministic:
+- Fixed maximum queue size (e.g., `MAX_QUEUE`) and maximum processed events per step.
+- If the queue overflows or recursion loops, define a safe behavior (drop events, clamp count).
+
+
+## 8. Mapping from the Original Design (DSL) to Effect Ops
+This section rewrites the canonical rules using Effect Ops.
+
+Notation:
+- `SELF`/`OPPONENT` are targets: 0 = executor, 1 = other (resolved relative to executor).
+- `Attr(T, X)` means `ATTR(target=T, attr_id=X)` (a ValueSpec).
+- `C(k)` means `CONST(k)` (a ValueSpec).
+
+### 8.1 Global Rule: Death (Health depletion)
+Trigger: `ON_ATTRIBUTE_CHANGE(ATTR_HEALTH)`
+Program:
+  IF_LT( Attr(SELF, ATTR_HEALTH), C(1),
+    then_ops = [ LOSE(SELF), END() ],
+    else_ops = [ END() ]
+  )
+
+### 8.2 Global Rule: Burning (damage over time)
+Trigger: `ON_TURN_START`
+Program:
+  IF_GT( Attr(SELF, ATTR_BURN), C(0),
+    then_ops = [
+      DAMAGE(SELF, Attr(SELF, ATTR_BURN)),
+      ADD_ATTR(SELF, ATTR_BURN, C(-1)),
+      END()
+    ],
+    else_ops = [ END() ]
+  )
+
+### 8.3 Global Rule: Stun (skip action)
+Trigger: `ON_ACTION_PHASE_START`
+Program:
+  IF_GT( Attr(SELF, ATTR_STUN), C(0),
+    then_ops = [
+      ADD_ATTR(SELF, ATTR_STUN, C(-1)),
+      PASS(),
+      END()
+    ],
+    else_ops = [ END() ]
+  )
+
+### 8.4 Fire Mage Passive: Mana Regen
+Trigger: `ON_TURN_START`
+Program (simple version):
+  ADD_ATTR(SELF, ATTR_MANA, Attr(SELF, ATTR_MANA_REGEN))
+  END()
+
+Program (bounded-to-max version, if you want it):
+  SET_ATTR(SELF, ATTR_MANA,
+    MIN(
+      ADD(Attr(SELF, ATTR_MANA), Attr(SELF, ATTR_MANA_REGEN)),
+      Attr(SELF, ATTR_MAX_MANA)
+    )
+  )
+  END()
+
+
+## 9. Mapping Abilities to Effect Ops
+Abilities are just Effect Ops programs executed by the active entity.
+
+### 9.1 Fighter: Basic Attack
+Intent: deal damage equal to strength.
+Program:
+  DAMAGE(OPPONENT, Attr(SELF, ATTR_STRENGTH))
+  END()
+
+### 9.2 Fighter: Power Strike
+Intent: deal strength + d6 damage.
+Program:
+  DAMAGE(OPPONENT, ADD(Attr(SELF, ATTR_STRENGTH), ROLL(6)))
+  END()
+
+### 9.3 Fighter: Defend
+Intent: +3 defense (duration handled by additional effects if desired).
+Program:
+  ADD_ATTR(SELF, ATTR_DEFENSE, C(3))
+  END()
+
+### 9.4 Fire Mage: Fireball
+Intent: spend mana, deal damage, apply burn.
+Program:
+  ADD_ATTR(SELF, ATTR_MANA, C(-5))
+  DAMAGE(OPPONENT, C(8))
+  ADD_ATTR(OPPONENT, ATTR_BURN, C(2))
+  END()
+
+(Optional gating if you want “fail cast” instead of allowing negative mana)
+  IF_GT(Attr(SELF, ATTR_MANA), C(4),
+    then_ops=[ ...the body above... ],
+    else_ops=[ END() ]
+  )
+
+### 9.5 Fire Mage: Heal
+Intent: spend mana, heal up to max health.
+Program:
+  ADD_ATTR(SELF, ATTR_MANA, C(-3))
+  SET_ATTR(SELF, ATTR_HEALTH,
+    MIN( ADD(Attr(SELF, ATTR_HEALTH), C(5)), Attr(SELF, ATTR_MAX_HEALTH) )
+  )
+  END()
+
+### 9.6 Fire Mage: Ice Bolt
+Intent: spend mana, deal damage, apply stun.
+Program:
+  ADD_ATTR(SELF, ATTR_MANA, C(-4))
+  DAMAGE(OPPONENT, C(6))
+  ADD_ATTR(OPPONENT, ATTR_STUN, C(1))
+  END()
+
+
+## 10. Data Schema (authoring format)
+Example authoring schema for heroes (JSON-like):
+{
+  "name": "Fire Mage",
+  "attributes": { "health": 70, "max_health": 70, ... },
+  "abilities": [
+    {
+      "name": "Fireball",
+      "tags": ["spell", "fire"],
+      "program": [
+        { "op": "ADD_ATTR", "target": "SELF", "attr": "mana", "delta": { "kind": "CONST", "value": -5 } },
+        { "op": "ADD_ATTR", "target": "OPPONENT", "attr": "health", "delta": { "kind": "CONST", "value": -8 } },
+        { "op": "ADD_ATTR", "target": "OPPONENT", "attr": "burn", "delta": { "kind": "CONST", "value": 2 } },
+        { "op": "END" }
+      ]
+    }
+  ],
+  "effects": [
+    {
+      "trigger": { "type": "ON_TURN_START" },
+      "program": [ ... ]
+    }
+  ]
+}
+
+Runtime representation can be a compiled, fixed-shape form:
+- `opcodes[MAX_OPS]` + parameter arrays
+- (optional) compiled ValueSpec arrays
+
+The key property is: **no string evaluation at runtime**; only numeric IDs.
+
+
+## 11. Why this replaces the DSL
+Compared to a general DSL/bytecode:
+- Authoring is structured (lists/trees), not fragile jump offsets.
+- Interpreter is simpler: a small `switch(op)` over a fixed set.
+- JIT is straightforward: fixed program sizes, `lax.cond` for IF, JAX PRNG for ROLL.
+- Still “rules as data”: heroes/modes are just different op+parameter arrays.
+
