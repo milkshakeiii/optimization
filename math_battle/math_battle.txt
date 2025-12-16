@@ -19,3 +19,15 @@ Notes:
 We will want to refer to groups of attributes and active abilities in addition to individual ones, so there should be a system of tags where abilities and attributes can have multiple tags associated with them such as "movement," "spell," "stealth," etc.
 
 The game will consist of alternating turns. We will allow effects to force certain actions, including a pass action, but that's the extent of interaction with the otherwise fixed turn order that we'll allow.
+
+More notes on updated version (from codex):
+  - execute_program() still builds the SET/ADD state updates every step and gates them with jnp.where (math_battle/src/
+    effect_interpreter.py:230), so IF/JUMP/NOOP steps still pay a lot of compute; lax.switch(op_type, ...) handlers would
+    make this genuinely selective.
+  - eval_value_spec() still computes randint for every node because it’s all nested jnp.where (math_battle/src/
+    effect_interpreter.py:55); RNG state no longer advances unless it’s a roll, but compute still happens. A
+    lax.switch(ntype, ...) per node is the next speed win.
+  - ValueSpec.num_nodes isn’t clamped to MAX_VALUE_DEPTH (still set to the full python list length), so deep expressions
+    can break _merge_trees/_wrap_unary at build time; clamp in math_battle/src/effect_ops.py:80.
+  - Optional: only enqueue attr-change events when delta != 0 to reduce trigger churn (math_battle/src/
+    effect_interpreter.py:263).
