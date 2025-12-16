@@ -79,12 +79,12 @@ class ValueSpec(NamedTuple):
 
 def _make_value_spec(types_list, param1_list, param2_list):
     """Helper to create a ValueSpec from Python lists."""
-    n = len(types_list)
+    n = min(len(types_list), MAX_VALUE_DEPTH)  # Clamp to max depth
     types = [0] * MAX_VALUE_DEPTH
     param1 = [0.0] * MAX_VALUE_DEPTH
     param2 = [0.0] * MAX_VALUE_DEPTH
 
-    for i in range(min(n, MAX_VALUE_DEPTH)):
+    for i in range(n):
         types[i] = types_list[i]
         param1[i] = float(param1_list[i])
         param2[i] = float(param2_list[i])
