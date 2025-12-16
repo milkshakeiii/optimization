@@ -13,7 +13,7 @@ from .game_state import (
     TRIGGER_ON_TURN_START, TRIGGER_ON_ACTION_PHASE_START,
     TRIGGER_ON_TURN_END, TRIGGER_ON_ABILITY_USED, TRIGGER_ON_ATTRIBUTE_CHANGE,
     TRIGGER_ON_GAME_START, ATTR_HEALTH,
-    CTX_ABILITY_ID, CTX_ATTR_DELTA, CTX_ATTR_NEW, CTX_ATTR_OLD, CTX_ATTR_NAME,
+    CTX_ABILITY_ID, CTX_ATTR_DELTA, CTX_ATTR_NEW, CTX_ATTR_OLD, CTX_ATTR_ID,
 )
 from .effect_ops import Program, MAX_OPS, MAX_VALUE_DEPTH
 from .effect_interpreter import (
@@ -160,7 +160,10 @@ def trigger_effects(
 
 
 def process_trigger_queue(state: GameState, rng: Array) -> Tuple[GameState, Array]:
-    """Process pending triggers in the queue."""
+    """Process pending triggers in the queue.
+
+    Reads queue_values to populate CTX_ATTR_OLD/NEW/DELTA/ID before triggering.
+    """
 
     def cond_fun(args):
         s, r, processed_count = args
@@ -175,6 +178,20 @@ def process_trigger_queue(state: GameState, rng: Array) -> Tuple[GameState, Arra
         safe_idx = jnp.clip(idx, 0, MAX_QUEUE - 1)
         target_idx = s.queue[safe_idx, 0]
         attr_idx = s.queue[safe_idx, 1]
+
+        # Get old/new/delta values from queue_values
+        queue_vals = s.queue_values[safe_idx]
+        old_val = queue_vals[0]
+        new_val = queue_vals[1]
+        delta_val = queue_vals[2]
+
+        # Set context for the attribute change trigger
+        new_context = s.context
+        new_context = new_context.at[CTX_ATTR_OLD].set(old_val)
+        new_context = new_context.at[CTX_ATTR_NEW].set(new_val)
+        new_context = new_context.at[CTX_ATTR_DELTA].set(delta_val)
+        new_context = new_context.at[CTX_ATTR_ID].set(attr_idx.astype(jnp.float32))
+        s = s._replace(context=new_context)
 
         # Decrement count
         s = s._replace(queue_count=idx)

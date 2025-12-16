@@ -65,7 +65,7 @@ CTX_ABILITY_COST = 1
 CTX_ATTR_DELTA = 2
 CTX_ATTR_NEW = 3
 CTX_ATTR_OLD = 4
-CTX_ATTR_NAME = 5
+CTX_ATTR_ID = 5  # Renamed from CTX_ATTR_NAME for consistency with effect_ops
 
 
 class Entity(NamedTuple):
@@ -161,7 +161,8 @@ class GameState(NamedTuple):
         winner: Winner index (-1 if ongoing, 0 or 1 if finished)
         passed: Whether the action phase was skipped (via PASS)
         context: Execution context for triggers
-        queue: Pending attribute change triggers
+        queue: Pending attribute change triggers [target_idx, attr_idx]
+        queue_values: Attribute change values [old, new, delta]
         queue_count: Number of items in queue
     """
     player: Entity
@@ -173,6 +174,7 @@ class GameState(NamedTuple):
     passed: Array         # scalar bool
     context: Array        # (CTX_SIZE,) float32
     queue: Array          # (MAX_QUEUE, 2) int32 - [target_idx, attr_idx]
+    queue_values: Array   # (MAX_QUEUE, 3) float32 - [old, new, delta]
     queue_count: Array    # scalar int32
 
 
@@ -231,6 +233,7 @@ def create_initial_game_state(player: Entity, opponent: Entity) -> GameState:
         passed=jnp.array(False, dtype=jnp.bool_),
         context=jnp.zeros(CTX_SIZE, dtype=jnp.float32),
         queue=jnp.zeros((MAX_QUEUE, 2), dtype=jnp.int32),
+        queue_values=jnp.zeros((MAX_QUEUE, 3), dtype=jnp.float32),
         queue_count=jnp.array(0, dtype=jnp.int32),
     )
 

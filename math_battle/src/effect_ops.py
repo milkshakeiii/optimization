@@ -48,6 +48,7 @@ OP_IF_GT = 6
 OP_IF_LT = 7
 OP_IF_EQ = 8
 OP_NOOP = 9
+OP_JUMP = 10  # Unconditional jump, skip_count stored in attr_id
 
 # Context keys
 CTX_ABILITY_ID = 0
@@ -389,7 +390,19 @@ class ProgramBuilder:
         return self
 
     def _flatten_ops(self, ops_list: List[dict]) -> List[dict]:
-        """Flatten nested IF ops into a linear list."""
+        """Flatten nested IF ops into a linear list.
+
+        Layout for IF:
+            IF_* (then_count includes JUMP, else_count)
+            <then_ops...>
+            JUMP(else_count)  -- skips else if we executed then
+            <else_ops...>
+
+        Interpreter semantics:
+            IF_* when false: ip = ip + 1 + then_count (skip then + JUMP, land on else)
+            IF_* when true: ip = ip + 1 (execute then, hit JUMP at end)
+            JUMP(k): ip = ip + 1 + k (skip k ops)
+        """
         result = []
         for op in ops_list:
             if op['type'] in (OP_IF_GT, OP_IF_LT, OP_IF_EQ):
@@ -398,13 +411,24 @@ class ProgramBuilder:
                 flat_then = self._flatten_ops(then_ops)
                 flat_else = self._flatten_ops(else_ops)
 
+                # then_count includes the JUMP instruction
+                then_count_with_jump = len(flat_then) + 1 if flat_else else len(flat_then)
+
                 result.append({
                     'type': op['type'], 'target': op['target'], 'attr_id': op['attr_id'],
                     'value': op['value'], 'value2': op['value2'],
-                    'then_count': len(flat_then), 'else_count': len(flat_else),
+                    'then_count': then_count_with_jump, 'else_count': len(flat_else),
                 })
                 result.extend(flat_then)
-                result.extend(flat_else)
+
+                # Insert JUMP to skip else_ops (only if there's an else branch)
+                if flat_else:
+                    result.append({
+                        'type': OP_JUMP, 'target': 0, 'attr_id': len(flat_else),
+                        'value': create_const(0), 'value2': create_const(0),
+                        'then_count': 0, 'else_count': 0,
+                    })
+                    result.extend(flat_else)
             else:
                 result.append({
                     'type': op['type'], 'target': op['target'], 'attr_id': op['attr_id'],

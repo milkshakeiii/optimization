@@ -580,3 +580,66 @@ def get_ability_name(hero_type: str, ability_idx: int) -> str:
     if ability_idx < len(names):
         return names[ability_idx]
     return f"Ability {ability_idx}"
+
+
+# =============================================================================
+# Entity Modification Helpers
+# =============================================================================
+
+def set_effect(
+    entity: Entity,
+    effect_idx: int,
+    trigger_type: int,
+    trigger_param: int,
+    program: Program,
+) -> Entity:
+    """Set a single effect on an entity.
+
+    Args:
+        entity: The entity to modify
+        effect_idx: Index of the effect slot (0 to MAX_EFFECTS-1)
+        trigger_type: Trigger type (e.g., TRIGGER_ON_ATTRIBUTE_CHANGE)
+        trigger_param: Trigger parameter (e.g., attribute index for attr change)
+        program: The effect program to execute
+
+    Returns:
+        Modified entity with the effect set
+    """
+    # Update trigger arrays
+    new_trigger = entity.effects_trigger.at[effect_idx].set(trigger_type)
+    new_trigger_param = entity.effects_trigger_param.at[effect_idx].set(trigger_param)
+
+    # Update program arrays
+    new_op_types = entity.effects_op_types.at[effect_idx].set(program.op_types)
+    new_targets = entity.effects_targets.at[effect_idx].set(program.targets)
+    new_attr_ids = entity.effects_attr_ids.at[effect_idx].set(program.attr_ids)
+    new_value_types = entity.effects_value_types.at[effect_idx].set(program.value_types)
+    new_value_param1 = entity.effects_value_param1.at[effect_idx].set(program.value_param1)
+    new_value_param2 = entity.effects_value_param2.at[effect_idx].set(program.value_param2)
+    new_value_num_nodes = entity.effects_value_num_nodes.at[effect_idx].set(program.value_num_nodes)
+    new_value2_types = entity.effects_value2_types.at[effect_idx].set(program.value2_types)
+    new_value2_param1 = entity.effects_value2_param1.at[effect_idx].set(program.value2_param1)
+    new_value2_param2 = entity.effects_value2_param2.at[effect_idx].set(program.value2_param2)
+    new_value2_num_nodes = entity.effects_value2_num_nodes.at[effect_idx].set(program.value2_num_nodes)
+    new_then_count = entity.effects_if_then_count.at[effect_idx].set(program.if_then_count)
+    new_else_count = entity.effects_if_else_count.at[effect_idx].set(program.if_else_count)
+    new_num_ops = entity.effects_num_ops.at[effect_idx].set(program.num_ops)
+
+    return entity._replace(
+        effects_trigger=new_trigger,
+        effects_trigger_param=new_trigger_param,
+        effects_op_types=new_op_types,
+        effects_targets=new_targets,
+        effects_attr_ids=new_attr_ids,
+        effects_value_types=new_value_types,
+        effects_value_param1=new_value_param1,
+        effects_value_param2=new_value_param2,
+        effects_value_num_nodes=new_value_num_nodes,
+        effects_value2_types=new_value2_types,
+        effects_value2_param1=new_value2_param1,
+        effects_value2_param2=new_value2_param2,
+        effects_value2_num_nodes=new_value2_num_nodes,
+        effects_if_then_count=new_then_count,
+        effects_if_else_count=new_else_count,
+        effects_num_ops=new_num_ops,
+    )
