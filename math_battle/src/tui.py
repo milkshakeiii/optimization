@@ -16,13 +16,13 @@ from .game_state import (
     ATTR_STRENGTH, ATTR_DEFENSE, ATTR_BURN, ATTR_STUN,
     ATTRIBUTE_NAMES,
 )
-from .env import MathBattleFuncEnv, EnvParams, get_action_mask
+from .env import MathBattleFuncEnv, EnvParams
+from .engine import get_action_mask
 from .heroes import (
     create_fighter, create_fire_mage, HERO_NAMES, ABILITY_NAMES,
     get_ability_name,
 )
 from .agent import Agent, DummyAgent, RandomAgent, GreedyAgent
-from .dsl import get_entity_jax
 
 
 # ANSI color codes
@@ -84,7 +84,7 @@ def get_mana_bar(current: float, maximum: float, width: int = 15) -> str:
 
 class TUIEnvWrapper:
     """Wraps MathBattleFuncEnv to provide the API expected by the TUI.
-    
+
     This effectively acts as the Gymnasium 'FunctionalJaxEnv' wrapper but
     tailored to the TUI's manual RNG handling preference.
     """
@@ -101,19 +101,19 @@ class TUIEnvWrapper:
     def step(self, state: GameState, action: int, rng: jnp.ndarray):
         # Transition
         next_state = self.env.transition(state, action, rng, self.params)
-        
+
         # Calculate derived values
         reward = self.env.reward(state, action, next_state, self.params)
         terminated = self.env.terminal(next_state, self.params)
-        
-        # Handle truncation check logic (mirrored from old env)
+
+        # Handle truncation check logic
         truncated = False
         if next_state.turn_count >= self.params.max_turns:
             truncated = True
-        
+
         obs = self.env.observation(next_state, self.params)
         info = self._get_info(next_state)
-        
+
         return next_state, obs, reward, terminated, truncated, info
 
     def _get_info(self, state: GameState) -> dict:
@@ -209,7 +209,7 @@ class MathBattleTUI:
         lines = []
 
         # Header
-        active_marker = f"{Colors.GREEN}▶{Colors.RESET} " if is_active else "  "
+        active_marker = f"{Colors.GREEN}>{Colors.RESET} " if is_active else "  "
         color = Colors.CYAN if is_player else Colors.MAGENTA
         lines.append(f"{active_marker}{color}{Colors.BOLD}{name}{Colors.RESET}")
 
@@ -236,9 +236,9 @@ class MathBattleTUI:
         burn = int(attributes[ATTR_BURN])
         stun = int(attributes[ATTR_STUN])
         if burn > 0:
-            effects.append(f"{Colors.RED}🔥 Burn({burn}){Colors.RESET}")
+            effects.append(f"{Colors.RED}Burn({burn}){Colors.RESET}")
         if stun > 0:
-            effects.append(f"{Colors.YELLOW}⚡ Stun({stun}){Colors.RESET}")
+            effects.append(f"{Colors.YELLOW}Stun({stun}){Colors.RESET}")
         if effects:
             lines.append(f"  Status: {' '.join(effects)}")
 
@@ -272,9 +272,9 @@ class MathBattleTUI:
             print("No game in progress. Call start_game() first.")
             return
 
-        print(f"\n{'═' * 50}")
-        print(f"{Colors.BOLD}         ⚔️  MATH BATTLE ⚔️{Colors.RESET}")
-        print(f"{'═' * 50}\n")
+        print(f"\n{'=' * 50}")
+        print(f"{Colors.BOLD}         MATH BATTLE{Colors.RESET}")
+        print(f"{'=' * 50}\n")
 
         # Get attributes
         player_attrs = np.array(self.state.player.attributes)
@@ -283,7 +283,7 @@ class MathBattleTUI:
         turn = int(self.state.turn_count)
 
         print(f"Turn: {turn}")
-        print(f"{'─' * 50}\n")
+        print(f"{'-' * 50}\n")
 
         # Render opponent
         print(self.render_entity(
@@ -294,7 +294,7 @@ class MathBattleTUI:
             is_player=False,
         ))
 
-        print(f"\n{'─' * 50}\n")
+        print(f"\n{'-' * 50}\n")
 
         # Render player
         print(self.render_entity(
@@ -313,7 +313,7 @@ class MathBattleTUI:
         # Render game log
         print(self.render_game_log())
 
-        print(f"\n{'═' * 50}")
+        print(f"\n{'=' * 50}")
 
     def get_player_action(self) -> int:
         """Get action from human player."""
@@ -368,11 +368,11 @@ class MathBattleTUI:
         if self.state.done:
             winner = int(self.state.winner)
             if winner == 0:
-                return True, f"{Colors.GREEN}{Colors.BOLD}🎉 YOU WIN! 🎉{Colors.RESET}"
+                return True, f"{Colors.GREEN}{Colors.BOLD}YOU WIN!{Colors.RESET}"
             elif winner == 1:
-                return True, f"{Colors.RED}{Colors.BOLD}💀 YOU LOSE! 💀{Colors.RESET}"
+                return True, f"{Colors.RED}{Colors.BOLD}YOU LOSE!{Colors.RESET}"
             else:
-                return True, f"{Colors.YELLOW}{Colors.BOLD}🤝 DRAW! 🤝{Colors.RESET}"
+                return True, f"{Colors.YELLOW}{Colors.BOLD}DRAW!{Colors.RESET}"
         return False, None
 
     def run(self):
@@ -461,9 +461,9 @@ def select_opponent() -> Tuple[str, Agent]:
 def main():
     """Main entry point for TUI."""
     clear_screen()
-    print(f"\n{'═' * 50}")
-    print(f"{Colors.BOLD}       ⚔️  WELCOME TO MATH BATTLE ⚔️{Colors.RESET}")
-    print(f"{'═' * 50}")
+    print(f"\n{'=' * 50}")
+    print(f"{Colors.BOLD}       WELCOME TO MATH BATTLE{Colors.RESET}")
+    print(f"{'=' * 50}")
     print("\nA turn-based fantasy duel game!")
 
     # Hero selection

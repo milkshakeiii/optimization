@@ -4,7 +4,7 @@ This module provides a pure functional environment interface using the
 Gymnasium Experimental Functional API.
 """
 
-from typing import Tuple, Dict, Any, Optional, NamedTuple, Union
+from typing import Tuple, Dict, Any, Optional, NamedTuple
 import jax
 import jax.numpy as jnp
 from jax import Array
@@ -19,9 +19,8 @@ from .game_state import (
 from .engine import (
     initialize_game, run_turn_start_phase, run_turn_end_phase,
     check_action_phase_start, execute_ability, swap_active_player,
-    get_action_mask,
+    get_action_mask, get_entity_jax,
 )
-from .dsl import get_entity_jax
 
 
 class EnvParams(NamedTuple):
@@ -48,7 +47,7 @@ class MathBattleFuncEnv(FuncEnv):
 
     def __init__(self, options: Optional[Dict[str, Any]] = None):
         """Initialize the environment definition (spaces and metadata).
-        
+
         Actual configuration (templates, max_turns) is passed via EnvParams.
         """
         # Define spaces
@@ -59,7 +58,7 @@ class MathBattleFuncEnv(FuncEnv):
             dtype=jnp.float32
         )
         self.action_space = spaces.Discrete(MAX_ABILITIES)
-        
+
         # Metadata
         self.metadata = {"render_modes": [], "render_fps": 30}
 
@@ -82,7 +81,7 @@ class MathBattleFuncEnv(FuncEnv):
         """Pure functional state transition."""
         rng, step_rng = jax.random.split(rng)
         new_state, _ = self._execute_turn(state, action, step_rng)
-        
+
         # Check truncation (max turns)
         is_truncated = new_state.turn_count >= params.max_turns
         new_done = jnp.logical_or(new_state.done, is_truncated)
@@ -97,50 +96,43 @@ class MathBattleFuncEnv(FuncEnv):
         return jnp.stack([player_attrs, opponent_attrs])
 
     def reward(
-        self, 
-        state: GameState, 
-        action: int, 
-        next_state: GameState, 
+        self,
+        state: GameState,
+        action: int,
+        next_state: GameState,
         params: EnvParams
     ) -> float:
         """Pure functional reward calculation."""
-        # Sparse reward: +1 for win, -1 for loss
-        # Use jax.lax.cond or jnp.where for branchless logic if inside JIT.
-        # Here we return float, but if JIT-ed it should return Array.
-        # Assuming this runs in a JIT context, we return jnp arrays.
-        
         def _calculate_reward(state, next_state):
-             # Winner: -1 ongoing, 0 player 0, 1 player 1
-             winner = next_state.winner
-             
-             win_reward = 1.0
-             loss_reward = -1.0
-             draw_reward = 0.0
-             
-             is_p0_win = (winner == 0)
-             is_p1_win = (winner == 1)
-             
-             # Basic reward
-             r = jnp.where(is_p0_win, win_reward, 
-                           jnp.where(is_p1_win, loss_reward, draw_reward))
-             
-             # Only apply if done
-             r = jnp.where(next_state.done, r, 0.0)
-             
-             # Dense reward
-             if params.dense_reward:
-                 prev_p_health = state.player.attributes[ATTR_HEALTH]
-                 prev_o_health = state.opponent.attributes[ATTR_HEALTH]
-                 new_p_health = next_state.player.attributes[ATTR_HEALTH]
-                 new_o_health = next_state.opponent.attributes[ATTR_HEALTH]
-                 
-                 p_delta = new_p_health - prev_p_health
-                 o_delta = new_o_health - prev_o_health
-                 
-                 dense = (o_delta - p_delta) * 0.01
-                 r = r + dense
-                 
-             return r
+            winner = next_state.winner
+
+            win_reward = 1.0
+            loss_reward = -1.0
+            draw_reward = 0.0
+
+            is_p0_win = (winner == 0)
+            is_p1_win = (winner == 1)
+
+            r = jnp.where(is_p0_win, win_reward,
+                          jnp.where(is_p1_win, loss_reward, draw_reward))
+
+            # Only apply if done
+            r = jnp.where(next_state.done, r, 0.0)
+
+            # Dense reward
+            if params.dense_reward:
+                prev_p_health = state.player.attributes[ATTR_HEALTH]
+                prev_o_health = state.opponent.attributes[ATTR_HEALTH]
+                new_p_health = next_state.player.attributes[ATTR_HEALTH]
+                new_o_health = next_state.opponent.attributes[ATTR_HEALTH]
+
+                p_delta = new_p_health - prev_p_health
+                o_delta = new_o_health - prev_o_health
+
+                dense = (o_delta - p_delta) * 0.01
+                r = r + dense
+
+            return r
 
         return _calculate_reward(state, next_state)
 
@@ -157,45 +149,20 @@ class MathBattleFuncEnv(FuncEnv):
         rng, phase_rng = jax.random.split(rng)
         state, phase_rng = run_turn_start_phase(state, phase_rng)
 
-        # Optimization: Early exit check logic needs to be functional for JIT
-        # We'll just run through but updates will be no-ops if done.
-        # However, the engine functions should handle done states gracefully (check_done checks).
-        
         # Phase 2: Action Phase
         rng, phase_rng = jax.random.split(rng)
 
         # Check for forced pass
         state, should_skip, phase_rng = check_action_phase_start(state, phase_rng)
 
-        # Conditional execution of ability
-        # If not done and not skip: execute ability
-        # Logic: execute_ability should probably handle the check or we use lax.cond
-        # For simplicity and robust JIT, we rely on engine to check `done`. 
-        # But `should_skip` is local.
-        
         rng, ability_rng = jax.random.split(rng)
-        
-        def _do_ability(s, r):
-            return execute_ability(s, action, r)
-            
-        def _skip_ability(s, r):
-            return s, r
 
-        # Execute ability if (not should_skip) and (not state.done)
-        # engine.execute_ability handles "state.done" check internally? 
-        # If not, we should wrap it. Assuming engine functions are safe.
-        # But `should_skip` logic:
-        
         can_act = jnp.logical_not(jnp.logical_or(should_skip, state.done))
-        
-        # We need to pass rng to both branches or handle it. 
-        # execute_ability returns (state, rng) (actually (state, new_rng) or just state?)
-        # Signature: execute_ability(state, action_idx, rng) -> (state, rng)
-        
+
         state, _ = jax.lax.cond(
             can_act,
             lambda args: execute_ability(args[0], action, args[1]),
-            lambda args: (args[0], args[1]), # Identity
+            lambda args: (args[0], args[1]),
             (state, ability_rng)
         )
 
@@ -211,7 +178,7 @@ class MathBattleFuncEnv(FuncEnv):
 
 class TwoPlayerEnv:
     """Wrapper for two-player games where both players take actions.
-    
+
     Updated to use MathBattleFuncEnv logic.
     """
 
@@ -239,32 +206,30 @@ class TwoPlayerEnv:
         next_state = self.env.transition(state, action, step_rng, self.params)
         reward = self.env.reward(state, action, next_state, self.params)
         done = self.env.terminal(next_state, self.params)
-        
+
         info = {
             "action_mask": get_action_mask(next_state),
             "active_player": next_state.active_player,
             "turn_count": next_state.turn_count,
             "winner": next_state.winner,
         }
-        
+
         return next_state, reward, done, info
 
     def get_observation_for_player(self, state: GameState, player: int) -> Array:
         """Get observation from a player's perspective."""
-        # Use lax.cond or select for JIT compatibility
-        # But player is usually int. 
         if isinstance(player, int):
-             if player == 0:
+            if player == 0:
                 return jnp.stack([
                     state.player.attributes,
                     state.opponent.attributes,
                 ])
-             else:
+            else:
                 return jnp.stack([
                     state.opponent.attributes,
                     state.player.attributes,
                 ])
-        
+
         # If player is an array (JIT context)
         return jax.lax.cond(
             player == 0,
@@ -279,6 +244,4 @@ class TwoPlayerEnv:
 
     def get_active_player(self, state: GameState) -> int:
         """Get index of active player."""
-        # Cast to int for python side usage if needed, or keep as array
         return state.active_player
-

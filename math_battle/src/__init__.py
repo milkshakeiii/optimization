@@ -2,7 +2,8 @@
 
 from .game_state import GameState, Entity
 from .env import MathBattleFuncEnv, EnvParams
-from .dsl import execute_script
+from .effect_ops import Program, ProgramBuilder, ValueSpec
+from .effect_interpreter import execute_program
 from .heroes import create_fighter, create_fire_mage
 
 __all__ = [
@@ -10,7 +11,10 @@ __all__ = [
     "Entity",
     "MathBattleFuncEnv",
     "EnvParams",
-    "execute_script",
+    "Program",
+    "ProgramBuilder",
+    "ValueSpec",
+    "execute_program",
     "create_fighter",
     "create_fire_mage",
 ]
